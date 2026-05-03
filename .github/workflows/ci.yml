@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+      - 'saga/**'
+      - 'mission/**'
+
+jobs:
+  validate:
+    name: Validate Docker Compose Stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose syntax
+        run: |
+          # TODO: install docker-compose and run: docker compose config
+          echo "Docker Compose validation — configure in next sprint"
+
+      - name: Check environment template completeness
+        run: |
+          # TODO: diff .env.template keys against .env.example
+          echo "Env template check — configure in next sprint"
+
+      - name: Lint YAML files
+        run: |
+          # TODO: add yamllint or similar
+          echo "YAML linting — configure in next sprint"

@@ -1,0 +1,38 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment — NEVER commit secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+*.log
+
+# Docker artifacts
+docker-compose.override.yml
+
+# Python tooling (if scripts added)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+*.tmp
+
+# Ollama model cache (if mounted locally)
+models/
+ollama-data/
