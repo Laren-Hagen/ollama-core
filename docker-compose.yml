@@ -1,0 +1,293 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ollama + Open Web UI — Personal Workstation Stack
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Services:
+#   ollama      — LLM inference backend (GPU-optional, NVIDIA passthrough)
+#   open-webui  — Browser-based chat frontend, connected to Ollama
+#
+# Image references:
+#   Ollama:      https://hub.docker.com/r/ollama/ollama
+#   Open Web UI: https://github.com/open-webui/open-webui/pkgs/container/open-webui
+#
+# Security references:
+#   Docker security:     https://docs.docker.com/engine/security/
+#   no-new-privileges:   https://docs.docker.com/reference/compose-file/services/#security_opt
+#   cap_drop / cap_add:  https://docs.docker.com/reference/compose-file/services/#cap_drop
+#   read_only:           https://docs.docker.com/reference/compose-file/services/#read_only
+#   deploy resources:    https://docs.docker.com/compose/compose-file/deploy/
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Ollama — LLM Inference Backend
+  # ───────────────────────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:0.22.1
+    # Pinned to 0.22.1 (same digest as 'latest' at stack design time, 2026-05-03).
+    # Check https://hub.docker.com/r/ollama/ollama/tags before upgrading.
+    container_name: ollama
+    restart: unless-stopped
+    networks:
+      - ollama-net
+
+    # ── Port policy: 11434 is NOT published to the host. ─────────────────────
+    # Open Web UI reaches Ollama via internal Docker DNS (http://ollama:11434).
+    # Publishing 11434 would expose the unauthenticated Ollama API to any
+    # process on the host. Source: https://docs.ollama.com/faq
+    # (Uncomment the block below ONLY for temporary local debugging.)
+    # ports:
+    #   - "127.0.0.1:11434:11434"    # DEBUG ONLY — exposes unauthenticated API
+
+    volumes:
+      # Named volume persists downloaded models across container recreates.
+      # Source: https://docs.ollama.com/faq — "Where are models stored?"
+      - ollama-models:/root/.ollama/models
+
+    tmpfs:
+      # /root/.ollama — Ollama writes non-model state here (identity keys,
+      # runtime config). Ephemeral storage is acceptable for this data.
+      # The named volume at /root/.ollama/models is mounted on top of this
+      # tmpfs, providing persistent model storage within the ephemeral parent.
+      - /root/.ollama:mode=0755
+      # /tmp — standard transient temp directory for the container process.
+      - /tmp:mode=1777
+
+    environment:
+      # Bind on all container interfaces so Open Web UI (same network) can
+      # reach Ollama by service name. Port 11434 is NOT published to the host.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_HOST: "0.0.0.0:11434"
+
+      # Context window in tokens. Configurable via .env.
+      # VRAM impact: KV cache grows linearly with context length.
+      #   8192 tokens  → ~1.0 GB KV cache (safe on 8 GB GPU)
+      #   16384 tokens → ~2.0 GB KV cache (total ~8.5 GB — exceeds 8 GB GPU)
+      # Source: https://docs.ollama.com/context-length
+      OLLAMA_CONTEXT_LENGTH: "${OLLAMA_CONTEXT_LENGTH:-8192}"
+
+      # Allow only one model loaded in VRAM at a time.
+      # Prevents silent VRAM exhaustion on model swap.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_MAX_LOADED_MODELS: "1"
+
+      # One concurrent request — single interactive user, no parallelism needed.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_NUM_PARALLEL: "1"
+
+      # Minimal request queue for personal non-concurrent use.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_MAX_QUEUE: "4"
+
+      # Keep model in VRAM for 5 minutes after last request.
+      # Override in .env: "-1" = permanent; "0" = unload immediately after response.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-5m}"
+
+      # Flash Attention reduces KV cache VRAM at 8192+ context lengths.
+      # No inference quality impact. Requires NVIDIA compute capability 5.0+.
+      # Source: https://docs.ollama.com/faq
+      OLLAMA_FLASH_ATTENTION: "1"
+
+      # Explicit model storage path — must match the volume mount point above.
+      # Source: https://docs.ollama.com/faq — "Where are models stored?"
+      OLLAMA_MODELS: "/root/.ollama/models"
+
+    healthcheck:
+      # Ollama's root path returns HTTP 200 when the API server is ready.
+      # start_period: 60s — allow time for GPU initialisation on first start.
+      # Source: https://docs.ollama.com/docker
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    # ── Security hardening ──────────────────────────────────────────────────
+    # Note — running user: Ollama runs as root (uid 0:gid 0) in its official
+    # image. GPU device file access via the NVIDIA Container Runtime requires
+    # this. The risk is mitigated by no-new-privileges, cap_drop: ALL, and
+    # a read-only root filesystem. The NVIDIA Container Runtime injects GPU
+    # device access outside the Linux capabilities framework, so cap_drop: ALL
+    # does not block GPU usage.
+    # Source: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/
+    #         latest/install-guide.html
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+    # ── Resource constraints ────────────────────────────────────────────────
+    # Memory limits prevent runaway growth during CPU inference.
+    # In GPU mode, model weights and KV cache reside in VRAM; system RAM
+    # usage drops to < 2 GB. The limits below are safe in both modes.
+    # Increase memory limit if running 13B+ parameter models in CPU mode.
+    # Sources: ollama-config-spec.md, https://docs.docker.com/compose/compose-file/deploy/
+    deploy:
+      resources:
+        limits:
+          memory: "12G"
+          cpus: "8.0"
+        reservations:
+          memory: "8G"
+          cpus: "2.0"
+          # ── NVIDIA GPU Passthrough ──────────────────────────────────────────
+          # REMOVE the entire 'devices:' block below if no NVIDIA GPU is present.
+          # CPU fallback is automatic — no environment variable changes are needed.
+          # Host prerequisites:
+          #   1. NVIDIA driver 531+ installed on the host
+          #   2. NVIDIA Container Toolkit installed
+          #   3. Docker configured for NVIDIA runtime
+          # See stack-implementation-guide.md → GPU vs CPU Mode.
+          # Sources:
+          #   https://docs.ollama.com/docker
+          #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/
+          #           latest/install-guide.html
+          #   https://docs.docker.com/compose/compose-file/deploy/#devices
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Open Web UI — Browser-based Chat Frontend
+  # ───────────────────────────────────────────────────────────────────────────
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.9.2
+    # Pinned to v0.9.2 (latest stable release as of 2026-05-03).
+    # Check https://github.com/open-webui/open-webui/releases before upgrading.
+    # Do NOT use :ollama (bundles Ollama inside — not appropriate for this stack)
+    # or :cuda (Open Web UI itself does not require a GPU).
+    container_name: open-webui
+    restart: unless-stopped
+    networks:
+      - ollama-net
+    ports:
+      # Bound to 127.0.0.1 (localhost only) to prevent other devices on the
+      # local network from reaching the UI. Remove '127.0.0.1:' to enable LAN.
+      # Source: open-web-ui-integration-spec.md — Security Configuration
+      - "127.0.0.1:3000:8080"
+    volumes:
+      # Persists SQLite database (webui.db), user accounts, chat history,
+      # and uploaded files across container recreates.
+      # Source: https://docs.openwebui.com/getting-started/quick-start/
+      #         #2-run-the-container
+      - open-webui-data:/app/backend/data
+    tmpfs:
+      # Python writes transient files to /tmp. PYTHONDONTWRITEBYTECODE=1
+      # (set below) prevents __pycache__ writes to the read-only filesystem.
+      - /tmp:mode=1777
+
+    environment:
+      # ── Ollama Connection ─────────────────────────────────────────────────
+      # MUST use Docker service name 'ollama', NOT 'localhost' or '127.0.0.1'.
+      # Inside the container, 'localhost' refers to Open Web UI itself.
+      # Source: https://docs.openwebui.com/getting-started/quick-start/
+      #         connect-a-provider/starting-with-ollama/#connection-tips
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
+      ENABLE_OLLAMA_API: "True"
+
+      # ── Authentication ────────────────────────────────────────────────────
+      # Source: https://docs.openwebui.com/reference/env-configuration/
+      WEBUI_AUTH: "True"
+      # REQUIRED — see .env.template. If unset, a new key is generated each
+      # container recreate, invalidating all existing user sessions.
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
+      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL}"
+      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD}"
+      # PersistentConfig: written to DB on first run; persists across restarts.
+      ENABLE_SIGNUP: "False"
+      ENABLE_LOGIN_FORM: "True"
+      JWT_EXPIRES_IN: "24h"
+
+      # ── General Configuration ─────────────────────────────────────────────
+      # 'prod' disables the FastAPI /docs endpoint (security hardening).
+      # Source: https://docs.openwebui.com/reference/env-configuration/#env
+      ENV: "prod"
+      PORT: "8080"
+      # CORS_ALLOW_ORIGIN must be set — avoids WebSocket 'Unexpected token' errors.
+      # Source: https://docs.openwebui.com/reference/env-configuration/#cors_allow_origin
+      CORS_ALLOW_ORIGIN: "http://localhost:3000"
+      # PersistentConfig: used for OAuth callbacks and internal link generation.
+      # Source: https://docs.openwebui.com/reference/env-configuration/#webui_url
+      WEBUI_URL: "http://localhost:3000"
+      ENABLE_OPENAI_API: "False"
+
+      # Prevent Python from writing __pycache__ bytecode to the read-only
+      # root filesystem. Without this, Python silently fails or errors when
+      # attempting to cache compiled bytecode in read-only package directories.
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    healthcheck:
+      # /health returns HTTP 200 when Open Web UI is ready to accept requests.
+      # start_period: 30s accounts for DB initialisation and startup tasks.
+      # Source: https://docs.openwebui.com/getting-started/quick-start/
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    depends_on:
+      ollama:
+        # Wait for Ollama health check to pass before Open Web UI starts.
+        # Prevents the initial model-list fetch from failing at startup.
+        # Source: open-web-ui-integration-spec.md — Notes for Docker Expert
+        condition: service_healthy
+
+    # ── Security hardening ──────────────────────────────────────────────────
+    # Note — running user: Open Web UI runs as root in its official image.
+    # The upstream project does not publish a supported non-root UID.
+    # The risk is mitigated by no-new-privileges, cap_drop: ALL, read-only
+    # root filesystem, and localhost-only port binding (127.0.0.1:3000:8080).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+
+    # ── Resource constraints ────────────────────────────────────────────────
+    # 2 GB is sufficient for the base Open Web UI application (SQLite, no RAG).
+    # Increase to 4 GB if RAG or embedding models are enabled.
+    deploy:
+      resources:
+        limits:
+          memory: "2G"
+          cpus: "2.0"
+        reservations:
+          memory: "512M"
+          cpus: "0.5"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  ollama-net:
+    # Named bridge network provides DNS-based service discovery.
+    # 'ollama' resolves to the Ollama container's IP from within open-webui.
+    # Neither service uses the implicit default Docker bridge network, which
+    # provides no DNS resolution between containers.
+    # Source: https://docs.docker.com/network/drivers/bridge/
+    driver: bridge
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  ollama-models:
+    # Persists downloaded Ollama model files (GGUF weights, manifests, blobs).
+    # Survives container recreates — models are NOT re-downloaded unless pulled.
+    # Source: https://docs.ollama.com/faq — "Where are models stored?"
+    driver: local
+
+  open-webui-data:
+    # Persists Open Web UI application state: SQLite database (webui.db),
+    # user accounts, chat history, and file uploads.
+    # Source: https://docs.openwebui.com/getting-started/quick-start/
+    #         #2-run-the-container
+    driver: local
