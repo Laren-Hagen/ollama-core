@@ -95,10 +95,11 @@ services:
       OLLAMA_MODELS: "/root/.ollama/models"
 
     healthcheck:
-      # Ollama's root path returns HTTP 200 when the API server is ready.
+      # `ollama list` connects to the Ollama API and exits 0 when ready.
+      # curl/wget are not present in the official ollama/ollama image.
       # start_period: 60s — allow time for GPU initialisation on first start.
       # Source: https://docs.ollama.com/docker
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 1"]
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
