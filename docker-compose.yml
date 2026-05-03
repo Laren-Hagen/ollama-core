@@ -24,8 +24,8 @@ services:
   # Ollama — LLM Inference Backend
   # ───────────────────────────────────────────────────────────────────────────
   ollama:
-    image: ollama/ollama:0.22.1
-    # Pinned to 0.22.1 (same digest as 'latest' at stack design time, 2026-05-03).
+    image: ollama/ollama:0.23.0
+    # Pinned to 0.23.0 (latest stable release as of 2026-05-03).
     # Check https://hub.docker.com/r/ollama/ollama/tags before upgrading.
     container_name: ollama
     restart: unless-stopped
